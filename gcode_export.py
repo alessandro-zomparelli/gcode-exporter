@@ -19,7 +19,7 @@ from bpy.props import (
 from .utils import *
 
 def change_speed_mode(self, context):
-    props = context.scene.tissue_gcode
+    props = context.scene.gcode_settings
     if props.previous_speed_mode != props.speed_mode:
         if props.speed_mode == 'SPEED':
             props.speed = props.feed/60
@@ -221,13 +221,13 @@ class GCODE_PT_gcode_exporter(Panel):
         col.separator()
         row = col.row(align=True)
         row.scale_y = 2.0
-        row.operator('scene.tissue_gcode_export')
+        row.operator('scene.gcode_export')
         #col.separator()
         #col.prop(props, 'animate', icon='TIME')
 
 
 class gcode_export(Operator):
-    bl_idname = "scene.tissue_gcode_export"
+    bl_idname = "scene.gcode_export"
     bl_label = "Export Gcode"
     bl_description = ("Export selected curve object as Gcode file")
     bl_options = {'REGISTER', 'UNDO'}
@@ -241,7 +241,7 @@ class gcode_export(Operator):
 
     def execute(self, context):
         scene = context.scene
-        props = scene.tissue_gcode
+        props = scene.gcode_settings
         # manage data
         if props.speed_mode == 'SPEED':
             props.feed = props.speed*60
@@ -264,8 +264,9 @@ class gcode_export(Operator):
             mesh = ob.evaluated_get(dg).data
             edges = [list(e.vertices) for e in mesh.edges]
             verts = [v.co for v in mesh.vertices]
+            radii = [1]*len(verts)
             ordered_verts = find_curves(edges, len(mesh.vertices))
-            ob = curve_from_pydata(verts, ordered_verts, name='__temp_curve__', merge_distance=0.1, set_active=False)
+            ob = curve_from_pydata(verts, radii, ordered_verts, name='__temp_curve__', merge_distance=0.1, set_active=False)
 
         vertices = [[matr @ p.co.xyz for p in s.points] for s in ob.data.splines]
         if use_curve_thickness:
