@@ -151,6 +151,7 @@ class gcode_settings(PropertyGroup):
         items=[
             ("3DPRINTER", "3D Printer", "Standard G-code with E values for 3D Printing"),
             ("CNC", "CNC", "G-code without E values for CNC"),
+            ("KUKA", "KUKA", "Export linear motion for KUKA robot")
         ],
     default="3DPRINTER"
 )
@@ -296,7 +297,7 @@ class gcode_export(Operator):
                 folder = '//' + os.path.splitext(bpy.path.basename(bpy.context.blend_data.filepath))[0]
             else:
                 folder = props.folder
-            if '.gcode' not in folder: folder += '.gcode'
+            #if '.gcode' not in folder: folder += '.gcode'
             path = bpy.path.abspath(folder)
             file = open(path, 'w')
             try:
@@ -414,7 +415,10 @@ class gcode_export(Operator):
                         if bpy.context.scene.gcode_settings.gcode_flavor == "3DPRINTER":
                             file.write('G92 E0 \n')
                         params = v[:3] + (feed,)
-                        to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} F{3:.0f}\n'.format(*params)
+                        if bpy.context.scene.gcode_settings.gcode_flavor == "KUKA":
+                            to_write = "PTP {{X {0:.3f}, Y {1:.3f}, Z {2:.3f}, A 0, B 90, C 0, S 'B110'}} C_PTP\n".format(*params) 
+                        else:
+                            to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} F{3:.0f}\n'.format(*params)
                         file.write(to_write)
                 else:
                     # start after retraction
@@ -453,8 +457,10 @@ class gcode_export(Operator):
                         if(export):
                             if bpy.context.scene.gcode_settings.gcode_flavor == "3DPRINTER":
                                 to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} E{3:.4f}\n'.format(*params)
-                            else:  # Assuming CNC as the other option
-                                to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f}\n'.format(*params[:-1])  # Exclude the E-value
+                            elif bpy.context.scene.gcode_settings.gcode_flavor == "CNC":  # CNC
+                                to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f}\n'.format(*params[:-1])  # Excludes the E-value
+                            else: #KUKA
+                                to_write = 'LIN {{X {0:.3f}, Y {1:.3f}, Z {2:.3f}, A 0, B 90, C 0}} C_DIS\n'.format(*params)  
                             file.write(to_write)
                         path_length += dist
                         printed_edges.append([len(printed_verts)-1, len(printed_verts)-2])
