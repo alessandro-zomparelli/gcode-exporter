@@ -272,6 +272,7 @@ class gcode_export(Operator):
                     self.report({'ERROR'}, "The selected object does not contain the attribute 'LayerHeight'")
                     return {'CANCELLED'}
                 mesh.attributes['LayerHeight'].data.foreach_get('value',radii)
+                radii = [r/2 for r in radii]
                 use_curve_thickness = True
             ordered_verts = find_curves(edges, len(mesh.vertices))
             ob = curve_from_pydata(verts, radii, ordered_verts, name='__temp_curve__', merge_distance=0.1, set_active=False)
