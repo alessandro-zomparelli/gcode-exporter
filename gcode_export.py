@@ -13,8 +13,7 @@ from bpy.props import (
         EnumProperty,
         FloatProperty,
         IntProperty,
-        StringProperty,
-        PointerProperty
+        StringProperty
         )
 from .utils import *
 
@@ -145,6 +144,10 @@ class gcode_settings(PropertyGroup):
         name="Use Curve Thickness", default=False,
         description = 'Layer height depends on radius and bevel of the curve'
         )
+    use_attribute_layerheight : BoolProperty(
+        name="Use Attribute 'LayerHeight'", default=False,
+        description = "Layer height depends on the mesh float attribute 'LayerHeight'"
+        )
 
 
 class GCODE_PT_gcode_exporter(Panel):
@@ -180,19 +183,21 @@ class GCODE_PT_gcode_exporter(Panel):
         #col.prop(self, 'esteps')
         col.prop(props, 'filament')
         col.prop(props, 'nozzle')
-        if context.object.type == 'CURVE' and props.use_curve_thickness:
-            row = col.row(align=True)
-            row.prop(props, 'layer_height')
-            row.enabled = False
-        else:
-            col.prop(props, 'layer_height')
+        row = col.row(align=True)
+        row.prop(props, 'layer_height')
+        use_curve_thickness = context.object.type == 'CURVE' and props.use_curve_thickness
+        use_attribute_layerheight = context.object.type == 'MESH' and props.use_attribute_layerheight
+        row.enabled = not use_curve_thickness and not use_attribute_layerheight
         if context.object.type == 'CURVE':
             col.prop(props, 'use_curve_thickness')
+        if context.object.type == 'MESH':
+            col.prop(props, 'use_attribute_layerheight')
         col.separator()
         col.label(text="Speed (Feed Rate F):", icon='DRIVER')
         col.prop(props, 'speed_mode', text='')
         speed_prefix = 'feed' if props.speed_mode == 'FEED' else 'speed'
-        col.prop(props, speed_prefix, text='Print')
+        row = col.row(align=True)
+        row.prop(props, speed_prefix, text='Print')
         if props.gcode_mode == 'RETR':
             col.prop(props, speed_prefix + '_vertical', text='Z Lift')
             col.prop(props, speed_prefix + '_horizontal', text='Travel')
@@ -252,11 +257,8 @@ class gcode_export(Operator):
         feed_h = props.feed_horizontal
         layer = props.layer_height
         flow_mult = props.flow_mult
-        use_curve_thickness = props.use_curve_thickness
-        if context.object.type != 'CURVE': use_curve_thickness = False
-        #if context.object.type != 'CURVE':
-        #    self.report({'ERROR'}, 'Please select a Curve object')
-        #    return {'CANCELLED'}
+        use_curve_thickness = props.use_curve_thickness and context.object.type == 'CURVE'
+        use_att_layerheight = props.use_attribute_layerheight and context.object.type == 'MESH'
         ob = context.object
         matr = ob.matrix_world
         if ob.type == 'MESH':
@@ -265,6 +267,12 @@ class gcode_export(Operator):
             edges = [list(e.vertices) for e in mesh.edges]
             verts = [v.co for v in mesh.vertices]
             radii = [1]*len(verts)
+            if use_att_layerheight:
+                if 'LayerHeight' not in mesh.attributes:
+                    self.report({'ERROR'}, "The selected object does not contain the attribute 'LayerHeight'")
+                    return {'CANCELLED'}
+                mesh.attributes['LayerHeight'].data.foreach_get('value',radii)
+                use_curve_thickness = True
             ordered_verts = find_curves(edges, len(mesh.vertices))
             ob = curve_from_pydata(verts, radii, ordered_verts, name='__temp_curve__', merge_distance=0.1, set_active=False)
 

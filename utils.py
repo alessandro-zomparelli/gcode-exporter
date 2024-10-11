@@ -122,6 +122,7 @@ def curve_from_pydata(points, radii, indexes, name='Curve', skip_open=False, mer
         s.points.foreach_set('co',co)
         s.points.foreach_set('radius',rad)
         s.use_cyclic_u = bool_cyclic
+    curve.bevel_depth = 1
     ob_curve = bpy.data.objects.new(name,curve)
     bpy.context.collection.objects.link(ob_curve)
     if set_active:

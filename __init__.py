@@ -29,8 +29,8 @@
 bl_info = {
     "name": "Gcode Exporter",
     "author": "Alessandro Zomparelli (Co-de-iT)",
-    "version": (0, 1, 00),
-    "blender": (2, 80, 0),
+    "version": (0, 1, 1),
+    "blender": (4, 2, 2),
     "location": "",
     "description": "Export edges paths or polylines as gcode files for digital fabrication",
     "warning": "",
