@@ -142,11 +142,15 @@ class gcode_settings(PropertyGroup):
         )
     use_curve_thickness : BoolProperty(
         name="Use Curve Thickness", default=False,
-        description = 'Layer height depends on radius and bevel of the curve'
+        description = 'Layer height depends on radius and bevel of the curve (radius*2*bevel).'
         )
     use_attribute_layerheight : BoolProperty(
         name="Use Attribute 'LayerHeight'", default=False,
-        description = "Layer height depends on the mesh float attribute 'LayerHeight'"
+        description = "Layer height is controlled by the mesh float attribute 'LayerHeight'"
+        )
+    use_attribute_speed : BoolProperty(
+        name="Use Attribute 'Speed'", default=False,
+        description = "Speed is controlled by the mesh float attribute 'Speed'"
         )
 
 
@@ -198,6 +202,9 @@ class GCODE_PT_gcode_exporter(Panel):
         speed_prefix = 'feed' if props.speed_mode == 'FEED' else 'speed'
         row = col.row(align=True)
         row.prop(props, speed_prefix, text='Print')
+        row.enabled = not (context.object.type == 'MESH' and props.use_attribute_speed)
+        if context.object.type == 'MESH':
+            col.prop(props, 'use_attribute_speed')
         if props.gcode_mode == 'RETR':
             col.prop(props, speed_prefix + '_vertical', text='Z Lift')
             col.prop(props, speed_prefix + '_horizontal', text='Travel')
@@ -214,11 +221,9 @@ class GCODE_PT_gcode_exporter(Panel):
                 col.prop(props, 'dz', text='Z Hop')
                 col.prop(props, 'push', text='Preload')
                 col.separator()
-            #col.label(text="Layers options:", icon='ALIGN_JUSTIFY')
         col.separator()
         col.prop(props, 'auto_sort_layers', text="Sort Layers (Z)")
         col.prop(props, 'auto_sort_points', text="Sort Points (XY)")
-        #col.prop(props, 'close_all')
         col.separator()
         col.label(text='Custom Code:', icon='TEXT')
         col.prop_search(props, 'start_code', bpy.data, 'texts')
@@ -226,10 +231,7 @@ class GCODE_PT_gcode_exporter(Panel):
         col.separator()
         row = col.row(align=True)
         row.scale_y = 2.0
-        row.operator('scene.gcode_export')
-        #col.separator()
-        #col.prop(props, 'animate', icon='TIME')
-
+        row.operator('scene.gcode_export', icon='EXPORT')
 
 class gcode_export(Operator):
     bl_idname = "scene.gcode_export"
@@ -259,27 +261,39 @@ class gcode_export(Operator):
         flow_mult = props.flow_mult
         use_curve_thickness = props.use_curve_thickness and context.object.type == 'CURVE'
         use_att_layerheight = props.use_attribute_layerheight and context.object.type == 'MESH'
+        use_att_speed = props.use_attribute_speed and context.object.type == 'MESH'
         ob = context.object
         matr = ob.matrix_world
+        att_speed = None
         if ob.type == 'MESH':
             dg = context.evaluated_depsgraph_get()
             mesh = ob.evaluated_get(dg).data
+
+            if use_att_layerheight and 'LayerHeight' not in mesh.attributes:
+                self.report({'ERROR'}, "The selected object does not contain the attribute 'LayerHeight'")
+                return {'CANCELLED'}
+            if use_att_speed and 'Speed' not in mesh.attributes:
+                self.report({'ERROR'}, "The selected object does not contain the attribute 'Speed'")
+                return {'CANCELLED'}
+            
             edges = [list(e.vertices) for e in mesh.edges]
             verts = [v.co for v in mesh.vertices]
             radii = [1]*len(verts)
             if use_att_layerheight:
-                if 'LayerHeight' not in mesh.attributes:
-                    self.report({'ERROR'}, "The selected object does not contain the attribute 'LayerHeight'")
-                    return {'CANCELLED'}
-                mesh.attributes['LayerHeight'].data.foreach_get('value',radii)
-                radii = [r/2 for r in radii]
+                mesh.attributes['LayerHeight'].data.foreach_get('value', radii)
                 use_curve_thickness = True
+
             ordered_verts = find_curves(edges, len(mesh.vertices))
             ob = curve_from_pydata(verts, radii, ordered_verts, name='__temp_curve__', merge_distance=0.1, set_active=False)
 
+            att_speed = [1]*len(verts)
+            if use_att_speed:
+                mesh.attributes['Speed'].data.foreach_get('value', att_speed)
+                att_speed = [[att_speed[v] for v in verts] for verts in ordered_verts]
+
         vertices = [[matr @ p.co.xyz for p in s.points] for s in ob.data.splines]
         if use_curve_thickness:
-            bevel_depth = ob.data.bevel_depth
+            bevel_depth = ob.data.bevel_depth if use_att_layerheight else ob.data.bevel_depth*2
             var_height = [[p.radius * bevel_depth for p in s.points] for s in ob.data.splines]
         cyclic_u = [s.use_cyclic_u for s in ob.data.splines]
 
@@ -310,6 +324,8 @@ class gcode_export(Operator):
             sorted_verts = []
             if use_curve_thickness:
                 sorted_height = []
+            if use_att_speed:
+                sorted_speed = []
             for i, curve in enumerate(vertices):
                 # mean z
                 listz = [v[2] for v in curve]
@@ -318,9 +334,13 @@ class gcode_export(Operator):
                 sorted_verts.append((curve, meanz))
                 if use_curve_thickness:
                     sorted_height.append((var_height[i], meanz))
+                if use_att_speed:
+                    sorted_speed.append((att_speed[i], meanz))
             vertices = [data[0] for data in sorted(sorted_verts, key=lambda height: height[1])]
             if use_curve_thickness:
                 var_height = [data[0] for data in sorted(sorted_height, key=lambda height: height[1])]
+            if use_att_speed:
+                att_speed = [data[0] for data in sorted(sorted_speed, key=lambda height: height[1])]
 
         # sort vertices (XY)
         if props.auto_sort_points:
@@ -345,8 +365,6 @@ class gcode_export(Operator):
                             co_find = np.mean([median_points[j-1],median_points[j+1]],axis=0)
                         else:
                             co_find = np.mean(median_points[j-2:j],axis=0)
-                        #flow_mult[j] = flow_mult[j][index:]+flow_mult[j][:index]
-                        #layer[j] = layer[j][index:]+layer[j][:index]
                     else:
                         if j==0:
                             # close to next two curves median point
@@ -354,9 +372,11 @@ class gcode_export(Operator):
                         else:
                             co_find = vertices[j-1][-1]
                     co, index, dist = kd.find(co_find)
-                    vertices[j] = vertices[j][index:]+vertices[j][:index+1]
+                    vertices[j] = vertices[j][index:] + vertices[j][:index+1]
                     if use_curve_thickness:
-                        var_height[j] = var_height[j][index:]+var_height[j][:index+1]
+                        var_height[j] = var_height[j][index:] + var_height[j][:index+1]
+                    if use_att_speed:
+                        att_speed[j] = att_speed[j][index:] + att_speed[j][:index+1]
                 else:
                     if j > 0:
                         p0 = curve[0]
@@ -368,6 +388,8 @@ class gcode_export(Operator):
                             vertices[j].reverse()
                             if use_curve_thickness:
                                 var_height[j].reverse()
+                            if use_att_speed:
+                                att_speed[j].reverse()
 
         # calc bounding box
         min_corner = np.min(vertices[0],axis=0)
@@ -380,14 +402,12 @@ class gcode_export(Operator):
 
         # initialize variables
         e = 0
-        last_vert = Vector((0,0,0))
         maxz = 0
         path_length = 0
         travel_length = 0
 
         printed_verts = []
         printed_edges = []
-        travel_verts = []
         travel_edges = []
 
         # write movements
@@ -396,14 +416,16 @@ class gcode_export(Operator):
             first_id = len(printed_verts)
             for j in range(len(curve)):
                 v = curve[j]
-                v_flow_mult = flow_mult#[i][j]
-                v_layer = layer#[i][j]
+                v_flow_mult = flow_mult
+                v_layer = layer
                 if use_curve_thickness:
-                    v_layer = var_height[i][j]*2
+                    v_layer = var_height[i][j]
+                if use_att_speed:
+                    print(att_speed)
+                    feed = att_speed[i][j]
 
                 # record max z
                 maxz = np.max((maxz,v[2]))
-                #maxz = max(maxz,v[2])
 
                 # first point of the gcode
                 if i == j == 0:
@@ -446,9 +468,15 @@ class gcode_export(Operator):
                         cylinder = pi*(props.filament/2)**2
                         flow = area / cylinder * (0 if j == 0 else 1)
                         e += dist * v_flow_mult * flow
-                        params = v[:3] + (e,)
-                        if(export):
-                            to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} E{3:.4f}\n'.format(*params)
+                        if export:
+                            to_write = ""
+                            if use_att_speed:
+                                params = v[:3] + (e, feed)
+                                to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} E{3:.4f} F{4:.1f}\n'.format(*params)
+                            else:
+                                params = v[:3] + (e,)
+                                to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} E{3:.4f}\n'.format(*params)
+
                             file.write(to_write)
                         path_length += dist
                         printed_edges.append([len(printed_verts)-1, len(printed_verts)-2])
@@ -484,7 +512,7 @@ class gcode_export(Operator):
                     printed_verts.append((v0.x, v0.y, maxz+props.dz))
                     travel_edges.append((len(printed_verts)-1, len(printed_verts)-2))
                     travel_length += maxz+props.dz - v0.z
-        if(export):
+        if export:
             # end code
             try:
                 for line in bpy.data.texts[props.end_code].lines:
