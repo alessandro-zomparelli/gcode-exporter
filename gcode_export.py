@@ -16,6 +16,7 @@ from bpy.props import (
         StringProperty
         )
 from .utils import *
+from .tool_path import ToolPath
 
 def change_speed_mode(self, context):
     props = context.scene.gcode_settings
@@ -152,6 +153,10 @@ class gcode_settings(PropertyGroup):
         name="Use Attribute 'Speed'", default=False,
         description = "Speed is controlled by the mesh float attribute 'Speed'"
         )
+    info : StringProperty(
+        name="Info", default='<info>',
+        description = "Info"
+        )
 
 
 class GCODE_PT_gcode_exporter(Panel):
@@ -231,7 +236,7 @@ class GCODE_PT_gcode_exporter(Panel):
         col.separator()
         row = col.row(align=True)
         row.scale_y = 2.0
-        row.operator('scene.gcode_export', icon='EXPORT')
+        row.operator('scene.gcode_export')
 
 class gcode_export(Operator):
     bl_idname = "scene.gcode_export"
@@ -298,12 +303,25 @@ class gcode_export(Operator):
         cyclic_u = [s.use_cyclic_u for s in ob.data.splines]
 
         if ob.name == '__temp_curve__': bpy.data.objects.remove(ob)
-
         if len(vertices) == 1: props.gcode_mode = 'CONT'
+
+        tool_path_height = var_height if use_curve_thickness else None
+        tool_path_speed = att_speed if use_att_speed else None
+        tool_path = ToolPath(vertices, cyclic_u, layer_heights=tool_path_height, speeds=tool_path_speed)
+        if not props.auto_sort_points:
+            tool_path.make_cyclic()     
+        if props.auto_sort_layers:
+            tool_path.sort_z()
+        if props.auto_sort_points:
+            tool_path.sort_xy(props.gcode_mode)
+        vertices = tool_path.vertices
+        var_height = tool_path.layer_height
+        att_speed = tool_path.speed
+
         export = True
 
         # open file
-        if(export):
+        if export:
             if props.folder == '':
                 folder = '//' + os.path.splitext(bpy.path.basename(bpy.context.blend_data.filepath))[0]
             else:
@@ -316,80 +334,6 @@ class gcode_export(Operator):
                     file.write(line.body + '\n')
             except:
                 pass
-
-        #if props.gcode_mode == 'RETR':
-
-        # sort layers (Z)
-        if props.auto_sort_layers:
-            sorted_verts = []
-            if use_curve_thickness:
-                sorted_height = []
-            if use_att_speed:
-                sorted_speed = []
-            for i, curve in enumerate(vertices):
-                # mean z
-                listz = [v[2] for v in curve]
-                meanz = np.mean(listz)
-                # store curve and meanz
-                sorted_verts.append((curve, meanz))
-                if use_curve_thickness:
-                    sorted_height.append((var_height[i], meanz))
-                if use_att_speed:
-                    sorted_speed.append((att_speed[i], meanz))
-            vertices = [data[0] for data in sorted(sorted_verts, key=lambda height: height[1])]
-            if use_curve_thickness:
-                var_height = [data[0] for data in sorted(sorted_height, key=lambda height: height[1])]
-            if use_att_speed:
-                att_speed = [data[0] for data in sorted(sorted_speed, key=lambda height: height[1])]
-
-        # sort vertices (XY)
-        if props.auto_sort_points:
-            # curves median point
-            median_points = [np.mean(verts,axis=0) for verts in vertices]
-
-            # chose starting point for each curve
-            for j, curve in enumerate(vertices):
-                # for closed curves finds the best starting point
-                if cyclic_u[j]:
-                    # create kd tree
-                    kd = mathutils.kdtree.KDTree(len(curve))
-                    for i, v in enumerate(curve):
-                        kd.insert(v, i)
-                    kd.balance()
-
-                    if props.gcode_mode == 'RETR':
-                        if j==0:
-                            # close to next two curves median point
-                            co_find = np.mean(median_points[j+1:j+3],axis=0)
-                        elif j < len(vertices)-1:
-                            co_find = np.mean([median_points[j-1],median_points[j+1]],axis=0)
-                        else:
-                            co_find = np.mean(median_points[j-2:j],axis=0)
-                    else:
-                        if j==0:
-                            # close to next two curves median point
-                            co_find = np.mean(median_points[j+1:j+3],axis=0)
-                        else:
-                            co_find = vertices[j-1][-1]
-                    co, index, dist = kd.find(co_find)
-                    vertices[j] = vertices[j][index:] + vertices[j][:index+1]
-                    if use_curve_thickness:
-                        var_height[j] = var_height[j][index:] + var_height[j][:index+1]
-                    if use_att_speed:
-                        att_speed[j] = att_speed[j][index:] + att_speed[j][:index+1]
-                else:
-                    if j > 0:
-                        p0 = curve[0]
-                        p1 = curve[-1]
-                        last = vertices[j-1][-1]
-                        d0 = (last-p0).length
-                        d1 = (last-p1).length
-                        if d1 < d0:
-                            vertices[j].reverse()
-                            if use_curve_thickness:
-                                var_height[j].reverse()
-                            if use_att_speed:
-                                att_speed[j].reverse()
 
         # calc bounding box
         min_corner = np.min(vertices[0],axis=0)
@@ -413,7 +357,6 @@ class gcode_export(Operator):
         # write movements
         for i in range(len(vertices)):
             curve = vertices[i]
-            first_id = len(printed_verts)
             for j in range(len(curve)):
                 v = curve[j]
                 v_flow_mult = flow_mult
@@ -421,7 +364,6 @@ class gcode_export(Operator):
                 if use_curve_thickness:
                     v_layer = var_height[i][j]
                 if use_att_speed:
-                    print(att_speed)
                     feed = att_speed[i][j]
 
                 # record max z
@@ -482,22 +424,6 @@ class gcode_export(Operator):
                         printed_edges.append([len(printed_verts)-1, len(printed_verts)-2])
             if props.gcode_mode == 'RETR':
                 v0 = Vector(curve[-1])
-                if props.close_all and False:
-                    #printed_verts.append(v0)
-                    printed_edges.append([len(printed_verts)-1, first_id])
-
-                    v1 = Vector(curve[0])
-                    dist = (v0-v1).length
-                    area = v_layer * props.nozzle + pi*(v_layer/2)**2 # rectangle + circle
-                    cylinder = pi*(props.filament/2)**2
-                    flow = area / cylinder
-                    e += dist * v_flow_mult * flow
-                    params = v1[:3] + (e,)
-                    if(export):
-                        to_write = 'G1 X{0:.4f} Y{1:.4f} Z{2:.4f} E{3:.4f}\n'.format(*params)
-                        file.write(to_write)
-                    path_length += dist
-                    v0 = v1
                 if i < len(vertices)-1:
                     if(export):
                         if props.retraction_mode == 'GCODE':
@@ -520,26 +446,16 @@ class gcode_export(Operator):
             except:
                 pass
             file.close()
-            print("Saved gcode to " + path)
-        bb = list(min_corner) + list(max_corner)
-        info = 'Bounding Box:\n'
-        info += '\tmin\tX: {0:.1f}\tY: {1:.1f}\tZ: {2:.1f}\n'.format(*bb)
-        info += '\tmax\tX: {3:.1f}\tY: {4:.1f}\tZ: {5:.1f}\n'.format(*bb)
-        info += 'Extruded Filament: ' + format(e, '.2f') + '\n'
-        info += 'Extruded Volume: ' + format(e*pi*(props.filament/2)**2, '.2f') + '\n'
-        info += 'Printed Path Length: ' + format(path_length, '.2f') + '\n'
-        info += 'Travel Length: ' + format(travel_length, '.2f')
-        '''
-        # animate
-        if scene.animate:
-            scene = bpy.context.scene
-            try:
-                param = (scene.frame_current - scene.frame_start)/(scene.frame_end - scene.frame_start)
-            except:
-                param = 1
-            last_vert = max(int(param*len(printed_verts)),1)
-            printed_verts = printed_verts[:last_vert]
-            printed_edges = [e for e in printed_edges if e[0] < last_vert and e[1] < last_vert]
-            travel_edges = [e for e in travel_edges if e[0] < last_vert and e[1] < last_vert]
-        '''
+            print("Gcode Exporter:")
+            print("\tSaved gcode to " + path)
+            bb = list(min_corner) + list(max_corner)
+            info = '\tBounding Box:\n'
+            info += '\t\tmin\tX: {0:.1f}\tY: {1:.1f}\tZ: {2:.1f}\n'.format(*bb)
+            info += '\t\tmax\tX: {3:.1f}\tY: {4:.1f}\tZ: {5:.1f}\n'.format(*bb)
+            info += '\tExtruded Filament: ' + format(e, '.2f') + '\n'
+            info += '\tExtruded Volume: ' + format(e*pi*(props.filament/2)**2, '.2f') + '\n'
+            info += '\tPrinted Path Length: ' + format(path_length, '.2f') + '\n'
+            info += '\tTravel Length: ' + format(travel_length, '.2f')
+            props.info = info
+            print(info)
         return {'FINISHED'}
